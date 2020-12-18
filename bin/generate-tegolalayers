@@ -1,0 +1,120 @@
+#!/usr/bin/env python
+"""
+This script generates a tegola configuration yaml for the openmaptiles tileset.
+
+Usage:
+  generate-tegolalayers <tileset> [--postgis-ver <version>]
+                    [--layer=<layer>]... [--exclude-layers] [--key]
+                    [--gzip [<gzlevel>]] [--no-feature-ids]
+                    [--test-geometry]
+  generate-tegolalayers --help
+  generate-tegolalayer --version
+
+  <tileset>        Tileset definition yaml file
+
+Options:
+  -v --postgis-ver=<v>  Which version of PostGIS to target.  [default: 3.0]
+                        This parameter optimizes generated SQL for the specific ver.
+  -l --layer=<layer>    If set, limit tile generation to just this layer (could be multiple)
+  -x --exclude-layers   If set, uses all layers except the ones listed with -l (-l is required)
+  --key                 If set, the result will also have a `key` column (md5 of the mvt data)
+  --gzip                If set, compress MVT with gzip, with optional level=0..9.
+                        `gzip()` is available from https://github.com/pramsey/pgsql-gzip
+  --no-feature-ids      Disable feature ID generation, e.g. from osm_id.
+                        You must use this flag when generating SQL for PostGIS before v3
+  -g --test-geometry    Validate all geometries produced by ST_AsMvtGeom(), and warn.
+  --help                Show this screen.
+  --version             Show version.
+"""
+
+import os
+
+import toml
+
+from docopt import docopt
+
+import openmaptiles
+
+from openmaptiles.sqltomvt import MvtGenerator
+
+
+if __name__ == "__main__":
+    args = docopt(__doc__, version=openmaptiles.__version__)
+
+    zoom = 'zoom'
+    x = 'x'
+    y = 'y'
+
+    mvt = MvtGenerator(
+        tileset=args["<tileset>"],
+        postgis_ver=args["--postgis-ver"],
+        zoom=zoom,
+        x=x,
+        y=y,
+        layer_ids=args["--layer"],
+        exclude_layers=args["--exclude-layers"],
+        key_column=args["--key"],
+        gzip=args["--gzip"] and (args["<gzlevel>"] or True),
+        use_feature_id=False if args["--no-feature-ids"] else None,
+        test_geometry=args["--test-geometry"],
+        use_sql_tokens=True
+    )
+
+    provider_layers = []
+    map_layers = []
+
+    sql_tokens = {
+        "!bbox!": "!BBOX!",
+        "!scale_denominator!": "!SCALE_DENOMINATOR!",
+        "!pixel_width!": "!PIXEL_WIDTH!",
+        "!pixel_height!": "!PIXEL_HEIGHT!",
+        "!zoom!": "!ZOOM!",
+    }
+
+    for layer_id, layer in mvt.get_layers():
+        sql = mvt.layer_to_query(layer)
+
+        # Convert SQL tokens to be compatible with Tegola configuration
+        for k, v in sql_tokens.items():
+            sql = sql.replace(k, v)
+
+        tegola_layer = {
+            "name": layer.id,
+            "sql": sql,
+            "geometry_fieldname": "mvtgeometry",
+            "id_fieldname": ""
+        }
+
+        map_layer = {
+            "provider_layer": "{}.{}".format(mvt.tileset.name, layer.id),
+            "min_zoom": mvt.tileset.minzoom,
+            "max_zoom": mvt.tileset.maxzoom,
+        }
+        map_layers.append(map_layer)
+        provider_layers.append(tegola_layer)
+
+    tegola_config = {
+        "providers": [
+            {
+                "type": "mvt_postgis",
+                "name": mvt.tileset.name,
+                "host": os.environ["PGHOST"],
+                "port": os.environ["PGPORT"],
+                "database": os.environ["PGDATABASE"],
+                "user": os.environ["PGUSER"],
+                "password": os.environ["PGPASSWORD"],
+                "layers": provider_layers,
+            }
+        ],
+        "maps": [
+            {
+                "name": mvt.tileset.name,
+                "attribution": mvt.tileset.attribution,
+                "bounds": list(map(float, mvt.tileset.bounds)),
+                "center": list(map(float, mvt.tileset.center)),
+                "layers": map_layers,
+            }
+        ],
+    }
+
+    print(toml.dumps(tegola_config))

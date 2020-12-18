@@ -22,6 +22,7 @@ class MvtGenerator:
                  layer_ids: List[str] = None, exclude_layers=False,
                  key_column=False, gzip: Union[int, bool] = False,
                  use_feature_id: bool = None, test_geometry=False,
+                 use_sql_tokens: bool = False,
                  order_layers: bool = False, extent=4096):
         if isinstance(tileset, str):
             self.tileset = Tileset.parse(tileset)
@@ -38,6 +39,7 @@ class MvtGenerator:
         self.zoom = zoom
         self.x = x
         self.y = y
+        self.use_sql_tokens = use_sql_tokens
 
         # extract the actual version number
         # ...POSTGIS="2.4.8 r17696"...
@@ -194,14 +196,17 @@ as mvtl{extras} FROM {query}"""
         if self.zoom is None:
             return query
 
-        bbox = self.tile_to_bbox(layer, self.zoom, self.x, self.y)
-        query = self.substitute_sql(query, self.zoom, bbox)
+        if not self.use_sql_tokens:
+            bbox = self.tile_to_bbox(layer, self.zoom, self.x, self.y)
+            query = self.substitute_sql(query, self.zoom, bbox)
+
         tile_buffer_size = int(self.extent * layer.buffer_size / self.pixel_width)
         replacement = ''
         if to_mvt_geometry:
+            bbox = "!bbox!" if self.use_sql_tokens else self.bbox(self.zoom, self.x, self.y)
             replacement = f"ST_AsMVTGeom(" \
                           f"{layer.geometry_field}, " \
-                          f"{self.bbox(self.zoom, self.x, self.y)}, " \
+                          f"{bbox}, " \
                           f"{self.extent}, " \
                           f"{tile_buffer_size}, " \
                           f"true)"
